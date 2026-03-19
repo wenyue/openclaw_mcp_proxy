@@ -15,21 +15,21 @@ sequenceDiagram
     participant ProxyServer
     participant OpenClawClient
 
-    AppClient->>ProxyServer: POST /api/chats/register
+    AppClient->>ProxyServer: POST /v1/chat/sessions
     ProxyServer-->>AppClient: chat_session_id, bridge_url, mcp_url
-    AppClient->>ProxyServer: WS /api/chats/bridge?chat_session_id=...
-    OpenClawClient->>ProxyServer: POST /mcp/{chat_session_id}
+    AppClient->>ProxyServer: WS /v1/chat/sessions/{chat_session_id}/bridge
+    OpenClawClient->>ProxyServer: POST /v1/mcp/{chat_session_id}
     ProxyServer->>AppClient: invoke_tool
     AppClient-->>ProxyServer: invoke_result
     ProxyServer-->>OpenClawClient: MCP tool result
-    AppClient->>ProxyServer: POST /api/chats/unregister
+    AppClient->>ProxyServer: DELETE /v1/chat/sessions/{chat_session_id}
 ```
 
 ## Endpoints
 
-### `POST /api/chats/register`
+### `POST /v1/chat/sessions`
 
-Registers a chat session and returns the bridge and MCP endpoints for that session.
+Creates a chat session and returns the bridge and MCP endpoints for that session.
 
 Request body:
 
@@ -63,22 +63,14 @@ Response body:
 ```json
 {
   "chat_session_id": "session-id",
-  "bridge_url": "ws://127.0.0.1:8000/api/chats/bridge?chat_session_id=session-id",
-  "mcp_url": "http://127.0.0.1:8000/mcp/session-id"
+  "bridge_url": "ws://127.0.0.1:8000/v1/chat/sessions/session-id/bridge",
+  "mcp_url": "http://127.0.0.1:8000/v1/mcp/session-id"
 }
 ```
 
-### `POST /api/chats/unregister`
+### `DELETE /v1/chat/sessions/{chat_session_id}`
 
-Unregisters a chat session.
-
-Request body:
-
-```json
-{
-  "chat_session_id": "session-id"
-}
-```
+Deletes a chat session.
 
 Response body:
 
@@ -88,7 +80,7 @@ Response body:
 }
 ```
 
-### `WS /api/chats/bridge?chat_session_id=...`
+### `WS /v1/chat/sessions/{chat_session_id}/bridge`
 
 Connects the app-side execution bridge for a registered chat session.
 
@@ -127,13 +119,13 @@ App -> proxy:
 }
 ```
 
-### `POST /mcp/{chat_session_id}`
+### `POST /v1/mcp/{chat_session_id}`
 
 Exposes the registered tools for a specific chat session as a stateless HTTP MCP endpoint.
 
 This is the simplest way to connect OpenClaw to a specific registered session.
 
-### `POST /mcp/` with `X-OpenClaw-Chat-Session`
+### `POST /v1/mcp/` with `X-OpenClaw-Chat-Session`
 
 The MCP endpoint also supports header-based session routing:
 
@@ -151,13 +143,13 @@ The proxy uses two independent bearer tokens:
 
 - `OPENCLAW_PROXY_APP_TOKEN`
   Used by:
-  - `POST /api/chats/register`
-  - `POST /api/chats/unregister`
-  - `WS /api/chats/bridge`
+  - `POST /v1/chat/sessions`
+  - `DELETE /v1/chat/sessions/{chat_session_id}`
+  - `WS /v1/chat/sessions/{chat_session_id}/bridge`
 
 - `OPENCLAW_PROXY_OPENCLAW_TOKEN`
   Used by:
-  - `/mcp/...`
+  - `/v1/mcp/...`
 
 Important:
 
@@ -169,7 +161,6 @@ Do not leave either token empty outside local development.
 WebSocket close codes:
 
 - `4401`: invalid app token
-- `4400`: missing `chat_session_id`
 - `4404`: unknown `chat_session_id`
 
 ## Configuration
@@ -202,7 +193,7 @@ OPENCLAW_PROXY_TOOL_TIMEOUT_SECONDS=120
 ### Install dependencies
 
 ```bash
-pip install -r requirements.txt
+pip install fastapi fastmcp pydantic uvicorn
 ```
 
 ### Start the server
@@ -225,14 +216,14 @@ ok
 
 ## OpenClaw MCP Configuration
 
-See [`openclaw_mcp.example.json`](./openclaw_mcp.example.json) for a header-routed example:
+Header-routed example:
 
 ```json
 {
   "mcpServers": {
     "otakuroom-chat-mcp": {
       "transport": "http",
-      "url": "https://your-proxy-host.example.com/mcp",
+      "url": "https://your-proxy-host.example.com/v1/mcp",
       "headers": {
         "Authorization": "Bearer ${OPENCLAW_PROXY_OPENCLAW_TOKEN}",
         "X-OpenClaw-Chat-Session": "${CHAT_SESSION_ID}"
@@ -242,15 +233,15 @@ See [`openclaw_mcp.example.json`](./openclaw_mcp.example.json) for a header-rout
 }
 ```
 
-You can also connect directly to the session-specific URL returned by `register`, for example:
+You can also connect directly to the session-specific URL returned by session creation, for example:
 
 ```text
-https://your-proxy-host.example.com/mcp/<chat_session_id>
+https://your-proxy-host.example.com/v1/mcp/<chat_session_id>
 ```
 
 ## How Tool Forwarding Works
 
-1. The app registers a chat session and sends its available tool definitions.
+1. The app creates a chat session and sends its available tool definitions.
 2. The proxy stores the session in memory.
 3. OpenClaw calls the session MCP endpoint.
 4. The proxy dynamically builds a FastMCP app for that session and tool set.

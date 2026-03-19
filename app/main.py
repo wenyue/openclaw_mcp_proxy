@@ -8,12 +8,10 @@ from fastapi import FastAPI
 from starlette.responses import JSONResponse, PlainTextResponse
 
 from .auth import require_bearer_token
-from .chat_registration_api import create_router
+from .chat_session_api import create_router
 from .chat_session_registry import ChatSessionRegistry
 from .config import load_config
 from .openclaw_proxy_mcp import build_chat_mcp_app
-
-
 class DynamicMcpProxyApp:
     def __init__(self, registry: ChatSessionRegistry, openclaw_token: str) -> None:
         self._registry = registry
@@ -95,7 +93,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     app.include_router(create_router(registry=registry, app_token=config.app_token))
-    app.mount("/mcp", DynamicMcpProxyApp(registry, config.openclaw_token))
+    app.mount("/v1/mcp", DynamicMcpProxyApp(registry, config.openclaw_token))
 
     @app.get("/health")
     async def health() -> PlainTextResponse:

@@ -1,11 +1,18 @@
 import logging
 import os
 import unittest
+import warnings
 from urllib.parse import urlparse
 
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Unclosed <MemoryObjectReceiveStream at .*?>",
+    category=ResourceWarning,
+)
 
 
 class ProxyIntegrationTest(unittest.TestCase):
@@ -26,8 +33,8 @@ class ProxyIntegrationTest(unittest.TestCase):
         )
 
     def test_registered_mcp_url_accepts_initialize_request(self) -> None:
-        registration = self._register_chat()
-        mcp_path = urlparse(registration["mcp_url"]).path
+        session = self._create_chat_session()
+        mcp_path = urlparse(session["mcp_url"]).path
 
         response = self.client.post(
             mcp_path,
@@ -38,12 +45,12 @@ class ProxyIntegrationTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
 
     def test_header_routed_mcp_endpoint_accepts_initialize_request(self) -> None:
-        registration = self._register_chat()
+        session = self._create_chat_session()
 
         response = self.client.post(
-            "/mcp/",
+            "/v1/mcp/",
             headers=self._mcp_headers(
-                {"X-OpenClaw-Chat-Session": registration["chat_session_id"]},
+                {"X-OpenClaw-Chat-Session": session["chat_session_id"]},
             ),
             json=self._initialize_payload(),
         )
@@ -51,17 +58,27 @@ class ProxyIntegrationTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
 
     def test_bridge_disconnect_does_not_log_an_error_for_normal_close(self) -> None:
-        registration = self._register_chat()
+        session = self._create_chat_session()
 
         with self.assertNoLogs("openclaw_mcp_proxy", level="ERROR"):
             with self.client.websocket_connect(
-                f"/api/chats/bridge?chat_session_id={registration['chat_session_id']}",
+                f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
             ):
                 pass
 
-    def _register_chat(self) -> dict:
+    def test_delete_chat_session_endpoint_returns_ok(self) -> None:
+        session = self._create_chat_session()
+
+        response = self.client.delete(
+            f"/v1/chat/sessions/{session['chat_session_id']}",
+        )
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual({"ok": True}, response.json())
+
+    def _create_chat_session(self) -> dict:
         response = self.client.post(
-            "/api/chats/register",
+            "/v1/chat/sessions",
             json={
                 "user_id": "test-user",
                 "device_id": "test-device",

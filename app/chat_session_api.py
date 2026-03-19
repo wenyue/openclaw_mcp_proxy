@@ -8,9 +8,12 @@ from fastapi.responses import JSONResponse
 
 from .auth import require_app_token, require_websocket_app_token
 from .chat_session_registry import ChatSessionRegistry
-from .models import InvokeResultMessage, RegisterChatRequest, RegisterChatResponse, UnregisterChatRequest
+from .models import CreateChatSessionRequest, CreateChatSessionResponse, InvokeResultMessage
 
 logger = logging.getLogger('openclaw_mcp_proxy')
+
+_CHAT_SESSIONS_PATH = "/v1/chat/sessions"
+_MCP_PATH = "/v1/mcp"
 
 
 def create_router(
@@ -24,11 +27,14 @@ def create_router(
         require_app_token(authorization, app_token)
 
     @router.post(
-        "/api/chats/register",
-        response_model=RegisterChatResponse,
+        _CHAT_SESSIONS_PATH,
+        response_model=CreateChatSessionResponse,
         dependencies=[Depends(require_token_dependency)],
     )
-    async def register_chat(request: Request, payload: RegisterChatRequest) -> RegisterChatResponse:
+    async def create_chat_session(
+        request: Request,
+        payload: CreateChatSessionRequest,
+    ) -> CreateChatSessionResponse:
         chat_session_id = uuid4().hex
         await registry.register(
             chat_session_id=chat_session_id,
@@ -39,29 +45,25 @@ def create_router(
             tools=payload.tools,
         )
         base_url = str(request.base_url).rstrip("/")
-        return RegisterChatResponse(
+        return CreateChatSessionResponse(
             chat_session_id=chat_session_id,
-            bridge_url=f"{_to_ws_base(base_url)}/api/chats/bridge?chat_session_id={chat_session_id}",
-            mcp_url=f"{base_url}/mcp/{chat_session_id}",
+            bridge_url=f"{_to_ws_base(base_url)}{_CHAT_SESSIONS_PATH}/{chat_session_id}/bridge",
+            mcp_url=f"{base_url}{_MCP_PATH}/{chat_session_id}",
         )
 
-    @router.post(
-        "/api/chats/unregister",
+    @router.delete(
+        f"{_CHAT_SESSIONS_PATH}/{{chat_session_id}}",
         dependencies=[Depends(require_token_dependency)],
     )
-    async def unregister_chat(payload: UnregisterChatRequest) -> JSONResponse:
-        await registry.unregister(payload.chat_session_id)
+    async def delete_chat_session(chat_session_id: str) -> JSONResponse:
+        await registry.unregister(chat_session_id)
         return JSONResponse({"ok": True})
 
-    @router.websocket("/api/chats/bridge")
-    async def bridge_chat(websocket: WebSocket) -> None:
+    @router.websocket(f"{_CHAT_SESSIONS_PATH}/{{chat_session_id}}/bridge")
+    async def bridge_chat(websocket: WebSocket, chat_session_id: str) -> None:
         try:
             await require_websocket_app_token(websocket, app_token)
         except RuntimeError:
-            return
-        chat_session_id = websocket.query_params.get("chat_session_id")
-        if not chat_session_id:
-            await websocket.close(code=4400, reason="Missing chat_session_id.")
             return
         try:
             await registry.attach_bridge(chat_session_id, websocket)

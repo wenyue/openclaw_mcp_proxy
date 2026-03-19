@@ -10,7 +10,7 @@ class ToolSchema(BaseModel):
     input_schema: dict = Field(default_factory=dict)
 
 
-class RegisterChatRequest(BaseModel):
+class CreateChatSessionRequest(BaseModel):
     user_id: str
     device_id: str
     device_name: str = ""
@@ -19,15 +19,10 @@ class RegisterChatRequest(BaseModel):
     tools: list[ToolSchema] = Field(default_factory=list)
 
 
-class RegisterChatResponse(BaseModel):
+class CreateChatSessionResponse(BaseModel):
     chat_session_id: str
     bridge_url: str
     mcp_url: str
-
-
-class UnregisterChatRequest(BaseModel):
-    chat_session_id: str
-
 
 class InvokeToolMessage(BaseModel):
     type: str = "invoke_tool"
