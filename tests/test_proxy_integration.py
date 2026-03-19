@@ -1,11 +1,22 @@
 import logging
 import os
+import queue
+import threading
+import asyncio
 import unittest
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
+from fastapi import WebSocket
+from starlette.routing import Mount
+from starlette.websockets import WebSocketDisconnect
 
+from app.chat_session_registry import ChatSessionRegistry
+from app.models import InvokeResultMessage, ToolSchema
 from app.main import create_app
 
 warnings.filterwarnings(
@@ -76,8 +87,235 @@ class ProxyIntegrationTest(unittest.TestCase):
         self.assertEqual(200, response.status_code, response.text)
         self.assertEqual({"ok": True}, response.json())
 
-    def _create_chat_session(self) -> dict:
+    def test_delete_chat_session_closes_attached_bridge(self) -> None:
+        session = self._create_chat_session()
+
+        with self.client.websocket_connect(
+            f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+        ) as websocket:
+            response = self.client.delete(
+                f"/v1/chat/sessions/{session['chat_session_id']}",
+            )
+
+            self.assertEqual(200, response.status_code, response.text)
+            self._assert_bridge_closed(websocket)
+
+    def test_expired_session_read_path_closes_attached_bridge(self) -> None:
+        session = self._create_chat_session()
+
+        with self.client.websocket_connect(
+            f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+        ) as websocket:
+            self._expire_session_in_registry(session["chat_session_id"])
+
+            response = self.client.post(
+                urlparse(session["mcp_url"]).path,
+                headers=self._mcp_headers(),
+                json=self._initialize_payload(),
+            )
+
+            self.assertIn(response.status_code, {400, 404}, response.text)
+            self._assert_bridge_closed(websocket)
+
+    def test_second_bridge_attach_is_rejected_with_first_bridge_preserved(self) -> None:
+        session = self._create_chat_session_with_tool()
+        mcp_path = urlparse(session["mcp_url"]).path
+
+        with self.client.websocket_connect(
+            f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+        ) as first_bridge:
+            with self.assertRaises(WebSocketDisconnect) as second_disconnect:
+                with self.client.websocket_connect(
+                    f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+                ):
+                    pass
+
+            self.assertEqual(4409, second_disconnect.exception.code)
+
+            future = self._submit_tool_call(self.client, mcp_path)
+            invoke = self._receive_json(first_bridge)
+
+            self.assertEqual("invoke_tool", invoke["type"])
+            self.assertEqual("demo_tool", invoke["tool_name"])
+
+            first_bridge.send_json(
+                {
+                    "type": "invoke_result",
+                    "chat_session_id": session["chat_session_id"],
+                    "request_id": invoke["request_id"],
+                    "ok": True,
+                    "content": {"ok": True},
+                },
+            )
+            response = future.result(timeout=2)
+
+            self.assertEqual(200, response.status_code, response.text)
+            self.assertIn('"isError":false', response.text)
+
+    def test_delete_chat_session_is_idempotent(self) -> None:
+        session = self._create_chat_session()
+
+        first = self.client.delete(f"/v1/chat/sessions/{session['chat_session_id']}")
+        second = self.client.delete(f"/v1/chat/sessions/{session['chat_session_id']}")
+
+        self.assertEqual(200, first.status_code, first.text)
+        self.assertEqual(200, second.status_code, second.text)
+        self.assertEqual({"ok": True}, second.json())
+
+    def test_tool_call_without_bridge_returns_not_bridged_error(self) -> None:
+        session = self._create_chat_session_with_tool()
+
         response = self.client.post(
+            urlparse(session["mcp_url"]).path,
+            headers=self._mcp_headers(),
+            json=self._tool_call_payload(),
+        )
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertIn('"isError":true', response.text)
+        self.assertIn("Chat bridge is not connected.", response.text)
+
+    def test_inflight_tool_call_fails_when_session_is_invalidated(self) -> None:
+        session = self._create_chat_session_with_tool()
+        mcp_path = urlparse(session["mcp_url"]).path
+
+        with self.client.websocket_connect(
+            f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+        ) as websocket:
+            future = self._submit_tool_call(self.client, mcp_path)
+            invoke = self._receive_json(websocket)
+
+            self.assertEqual("invoke_tool", invoke["type"])
+
+            response = self.client.delete(
+                f"/v1/chat/sessions/{session['chat_session_id']}",
+            )
+            self.assertEqual(200, response.status_code, response.text)
+
+            tool_response = future.result(timeout=2)
+            self.assertEqual(200, tool_response.status_code, tool_response.text)
+            self.assertIn('"isError":true', tool_response.text)
+            self.assertIn("Chat session was unregistered.", tool_response.text)
+            self._assert_bridge_closed(websocket)
+
+    def test_ttl_cleanup_skips_session_with_pending_call(self) -> None:
+        session = self._create_chat_session_with_tool()
+        mcp_path = urlparse(session["mcp_url"]).path
+
+        with self.client.websocket_connect(
+            f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+        ) as websocket:
+            future = self._submit_tool_call(self.client, mcp_path)
+            invoke = self._receive_json(websocket)
+
+            self._expire_session_in_registry(session["chat_session_id"])
+            self._run_cleanup_once()
+
+            websocket.send_json(
+                {
+                    "type": "invoke_result",
+                    "chat_session_id": session["chat_session_id"],
+                    "request_id": invoke["request_id"],
+                    "ok": True,
+                    "content": {"ok": True},
+                },
+            )
+            response = future.result(timeout=2)
+
+            self.assertEqual(200, response.status_code, response.text)
+            self.assertIn('"isError":false', response.text)
+
+    def test_read_path_expiry_skips_session_with_pending_call(self) -> None:
+        session = self._create_chat_session_with_tool()
+        mcp_path = urlparse(session["mcp_url"]).path
+
+        with self.client.websocket_connect(
+            f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+        ) as websocket:
+            future = self._submit_tool_call(self.client, mcp_path)
+            invoke = self._receive_json(websocket)
+
+            self._expire_session_in_registry(session["chat_session_id"])
+            initialize_response = self.client.post(
+                mcp_path,
+                headers=self._mcp_headers(),
+                json=self._initialize_payload(),
+            )
+
+            self.assertEqual(200, initialize_response.status_code, initialize_response.text)
+
+            websocket.send_json(
+                {
+                    "type": "invoke_result",
+                    "chat_session_id": session["chat_session_id"],
+                    "request_id": invoke["request_id"],
+                    "ok": True,
+                    "content": {"ok": True},
+                },
+            )
+            response = future.result(timeout=2)
+
+            self.assertEqual(200, response.status_code, response.text)
+            self.assertIn('"isError":false', response.text)
+
+    def test_complete_tool_call_ignores_late_result_after_future_completion_race(self) -> None:
+        registry = ChatSessionRegistry(session_ttl_seconds=300, tool_timeout_seconds=1)
+        request_id = "session-1:1"
+
+        class RaceyFuture:
+            def done(self) -> bool:
+                return False
+
+            def set_result(self, value) -> None:
+                raise asyncio.InvalidStateError()
+
+            def set_exception(self, error: Exception) -> None:
+                raise asyncio.InvalidStateError()
+
+        async def seed() -> None:
+            session = await registry.register(
+                chat_session_id="session-1",
+                user_id="test-user",
+                device_id="test-device",
+                device_name="test-device-name",
+                chat_id="test-chat",
+                tools=[],
+            )
+            session.pending_calls[request_id] = RaceyFuture()
+
+        self.client.portal.call(seed)
+        self.client.portal.call(
+            registry.complete_tool_call,
+            InvokeResultMessage(
+                chat_session_id="session-1",
+                request_id=request_id,
+                ok=True,
+                content={"ok": True},
+            ),
+        )
+
+    def test_failed_bridge_accept_does_not_leave_stale_bridge(self) -> None:
+        session = self._create_chat_session_with_tool()
+        bridge_path = f"/v1/chat/sessions/{session['chat_session_id']}/bridge"
+
+        with patch.object(WebSocket, "accept", autospec=True, side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                with self.client.websocket_connect(bridge_path):
+                    pass
+
+        with self.client.websocket_connect(bridge_path):
+            pass
+
+    def _create_chat_session(self) -> dict:
+        return self._create_chat_session_with_client(self.client)
+
+    def _create_chat_session_with_client(
+        self,
+        client: TestClient,
+        *,
+        tools: list[dict] | None = None,
+    ) -> dict:
+        response = client.post(
             "/v1/chat/sessions",
             json={
                 "user_id": "test-user",
@@ -85,11 +323,29 @@ class ProxyIntegrationTest(unittest.TestCase):
                 "device_name": "test-device-name",
                 "app_version": "1.0.0",
                 "chat_id": "test-chat",
-                "tools": [],
+                "tools": tools or [],
             },
         )
         self.assertEqual(200, response.status_code, response.text)
         return response.json()
+
+    def _create_chat_session_with_tool(self) -> dict:
+        return self._create_chat_session_with_client(
+            self.client,
+            tools=[
+                {
+                    "name": "demo_tool",
+                    "path": "/tools/demo_tool",
+                    "description": "Demo tool.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                        },
+                    },
+                },
+            ],
+        )
 
     def _initialize_payload(self) -> dict:
         return {
@@ -113,6 +369,72 @@ class ProxyIntegrationTest(unittest.TestCase):
         if extra_headers is not None:
             headers.update(extra_headers)
         return headers
+
+    def _tool_call_payload(self, *, request_id: int = 2) -> dict:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "tools/call",
+            "params": {
+                "name": "demo_tool",
+                "arguments": {"text": "hello"},
+            },
+        }
+
+    def _submit_tool_call(self, client: TestClient, mcp_path: str):
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(
+            client.post,
+            mcp_path,
+            headers=self._mcp_headers(),
+            json=self._tool_call_payload(),
+        )
+        self.addCleanup(executor.shutdown, wait=False)
+        return future
+
+    def _receive_json(self, websocket):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(websocket.receive_json)
+            return future.result(timeout=2)
+
+    def _assert_bridge_closed(self, websocket) -> None:
+        result_queue: queue.Queue[BaseException | str] = queue.Queue(maxsize=1)
+
+        def receive() -> None:
+            try:
+                result_queue.put(websocket.receive_text())
+            except Exception as exc:
+                result_queue.put(exc)
+
+        thread = threading.Thread(target=receive, daemon=True)
+        thread.start()
+        try:
+            result = result_queue.get(timeout=1)
+        except queue.Empty:
+            self.fail("Expected bridge websocket to close promptly.")
+        if isinstance(result, WebSocketDisconnect):
+            return
+        if isinstance(result, Exception):
+            self.fail(f"Expected WebSocketDisconnect, got {type(result).__name__}: {result}")
+        self.fail("Expected bridge websocket to close, but it stayed open.")
+
+    def _expire_session_in_registry(self, chat_session_id: str) -> None:
+        registry = self._registry()
+
+        async def expire() -> None:
+            session = registry._sessions[chat_session_id]
+            session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+        self.client.portal.call(expire)
+
+    def _run_cleanup_once(self) -> None:
+        self.client.portal.call(self._registry().cleanup_expired)
+
+    def _registry(self):
+        for route in self.client.app.routes:
+            if isinstance(route, Mount) and route.path == "/v1/mcp":
+                return route.app._registry
+        self.fail("Could not locate chat session registry.")
 
     def _restore_env(self, key: str, value: str | None) -> None:
         if value is None:

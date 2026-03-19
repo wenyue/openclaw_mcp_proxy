@@ -61,18 +61,23 @@ def create_router(
 
     @router.websocket(f"{_CHAT_SESSIONS_PATH}/{{chat_session_id}}/bridge")
     async def bridge_chat(websocket: WebSocket, chat_session_id: str) -> None:
+        bridge_attached = False
         try:
             await require_websocket_app_token(websocket, app_token)
         except RuntimeError:
             return
         try:
             await registry.attach_bridge(chat_session_id, websocket)
+            bridge_attached = True
         except KeyError:
             await websocket.close(code=4404, reason="Unknown chat_session_id.")
             return
+        except RuntimeError as exc:
+            await websocket.close(code=4409, reason=str(exc))
+            return
 
-        await websocket.accept()
         try:
+            await websocket.accept()
             while True:
                 payload = InvokeResultMessage.model_validate_json(await websocket.receive_text())
                 if payload.type == "invoke_result":
@@ -84,7 +89,8 @@ def create_router(
                     exc_info=exc,
                 )
         finally:
-            await registry.detach_bridge(chat_session_id, websocket)
+            if bridge_attached:
+                await registry.detach_bridge(chat_session_id, websocket)
 
     return router
 
