@@ -1,8 +1,6 @@
-import logging
 import os
 import unittest
 import warnings
-from urllib.parse import urlparse
 
 from fastapi.testclient import TestClient
 
@@ -32,25 +30,13 @@ class ProxyIntegrationTest(unittest.TestCase):
             self._previous_openclaw_token,
         )
 
-    def test_registered_mcp_url_accepts_initialize_request(self) -> None:
-        session = self._create_chat_session()
-        mcp_path = urlparse(session["mcp_url"]).path
-
-        response = self.client.post(
-            mcp_path,
-            headers=self._mcp_headers(),
-            json=self._initialize_payload(),
-        )
-
-        self.assertEqual(200, response.status_code, response.text)
-
     def test_header_routed_mcp_endpoint_accepts_initialize_request(self) -> None:
         session = self._create_chat_session()
 
         response = self.client.post(
             "/v1/mcp/",
             headers=self._mcp_headers(
-                {"X-OpenClaw-Chat-Session": session["chat_session_id"]},
+                {"X-OpenClaw-Chat-Session": session["chatSessionId"]},
             ),
             json=self._initialize_payload(),
         )
@@ -62,7 +48,7 @@ class ProxyIntegrationTest(unittest.TestCase):
 
         with self.assertNoLogs("openclaw_mcp_proxy", level="ERROR"):
             with self.client.websocket_connect(
-                f"/v1/chat/sessions/{session['chat_session_id']}/bridge",
+                f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
             ):
                 pass
 
@@ -70,21 +56,50 @@ class ProxyIntegrationTest(unittest.TestCase):
         session = self._create_chat_session()
 
         response = self.client.delete(
-            f"/v1/chat/sessions/{session['chat_session_id']}",
+            f"/v1/chat/sessions/{session['chatSessionId']}",
         )
 
         self.assertEqual(200, response.status_code, response.text)
         self.assertEqual({"ok": True}, response.json())
 
+    def test_create_chat_session_accepts_camel_case_tool_schema_without_path(self) -> None:
+        response = self.client.post(
+            "/v1/chat/sessions",
+            json={
+                "userId": "test-user",
+                "deviceId": "test-device",
+                "deviceName": "test-device-name",
+                "appVersion": "1.0.0",
+                "chatId": "test-chat",
+                "tools": [
+                    {
+                        "name": "echo_text",
+                        "description": "Echo text.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "text": {
+                                    "type": "string",
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+        )
+
+        self.assertEqual(200, response.status_code, response.text)
+        self.assertEqual({"chatSessionId": response.json()["chatSessionId"]}, response.json())
+
     def _create_chat_session(self) -> dict:
         response = self.client.post(
             "/v1/chat/sessions",
             json={
-                "user_id": "test-user",
-                "device_id": "test-device",
-                "device_name": "test-device-name",
-                "app_version": "1.0.0",
-                "chat_id": "test-chat",
+                "userId": "test-user",
+                "deviceId": "test-device",
+                "deviceName": "test-device-name",
+                "appVersion": "1.0.0",
+                "chatId": "test-chat",
                 "tools": [],
             },
         )

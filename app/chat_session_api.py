@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from .auth import require_app_token, require_websocket_app_token
@@ -13,7 +13,6 @@ from .models import CreateChatSessionRequest, CreateChatSessionResponse, InvokeR
 logger = logging.getLogger('openclaw_mcp_proxy')
 
 _CHAT_SESSIONS_PATH = "/v1/chat/sessions"
-_MCP_PATH = "/v1/mcp"
 
 
 def create_router(
@@ -32,23 +31,19 @@ def create_router(
         dependencies=[Depends(require_token_dependency)],
     )
     async def create_chat_session(
-        request: Request,
         payload: CreateChatSessionRequest,
     ) -> CreateChatSessionResponse:
         chat_session_id = uuid4().hex
         await registry.register(
             chat_session_id=chat_session_id,
-            user_id=payload.user_id,
-            device_id=payload.device_id,
-            device_name=payload.device_name,
-            chat_id=payload.chat_id,
+            user_id=payload.userId,
+            device_id=payload.deviceId,
+            device_name=payload.deviceName,
+            chat_id=payload.chatId,
             tools=payload.tools,
         )
-        base_url = str(request.base_url).rstrip("/")
         return CreateChatSessionResponse(
-            chat_session_id=chat_session_id,
-            bridge_url=f"{_to_ws_base(base_url)}{_CHAT_SESSIONS_PATH}/{chat_session_id}/bridge",
-            mcp_url=f"{base_url}{_MCP_PATH}/{chat_session_id}",
+            chatSessionId=chat_session_id,
         )
 
     @router.delete(
@@ -87,11 +82,3 @@ def create_router(
             await registry.detach_bridge(chat_session_id, websocket)
 
     return router
-
-
-def _to_ws_base(base_url: str) -> str:
-    if base_url.startswith("https://"):
-        return "wss://" + base_url[len("https://") :]
-    if base_url.startswith("http://"):
-        return "ws://" + base_url[len("http://") :]
-    raise HTTPException(status_code=500, detail="Unsupported base URL.")

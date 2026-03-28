@@ -27,7 +27,7 @@ def _build_tool_handler(
     chat_session_id: str,
     tool: ToolSchema,
 ):
-    raw_properties = tool.input_schema.get("properties", {})
+    raw_properties = tool.inputSchema.get("properties", {})
     used_names: set[str] = set()
     parameters: list[str] = []
     assignments: list[str] = ["    arguments = {}"]

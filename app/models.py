@@ -5,37 +5,34 @@ from pydantic import BaseModel, Field
 
 class ToolSchema(BaseModel):
     name: str
-    path: str
     description: str
-    input_schema: dict = Field(default_factory=dict)
+    inputSchema: dict = Field(default_factory=dict)
 
 
 class CreateChatSessionRequest(BaseModel):
-    user_id: str
-    device_id: str
-    device_name: str = ""
-    app_version: str
-    chat_id: str
+    userId: str
+    deviceId: str
+    deviceName: str = ""
+    appVersion: str
+    chatId: str
     tools: list[ToolSchema] = Field(default_factory=list)
 
 
 class CreateChatSessionResponse(BaseModel):
-    chat_session_id: str
-    bridge_url: str
-    mcp_url: str
+    chatSessionId: str
 
 class InvokeToolMessage(BaseModel):
     type: str = "invoke_tool"
-    chat_session_id: str
-    request_id: str
-    tool_name: str
+    chatSessionId: str
+    requestId: str
+    toolName: str
     arguments: dict = Field(default_factory=dict)
 
 
 class InvokeResultMessage(BaseModel):
     type: str = "invoke_result"
-    chat_session_id: str
-    request_id: str
+    chatSessionId: str
+    requestId: str
     ok: bool
     content: dict | None = None
     error: str | None = None

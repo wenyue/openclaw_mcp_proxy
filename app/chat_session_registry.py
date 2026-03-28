@@ -126,9 +126,9 @@ class ChatSessionRegistry:
         try:
             await session.bridge.send_json(
                 InvokeToolMessage(
-                    chat_session_id=chat_session_id,
-                    request_id=request_id,
-                    tool_name=tool_name,
+                    chatSessionId=chat_session_id,
+                    requestId=request_id,
+                    toolName=tool_name,
                     arguments=arguments,
                 ).model_dump(),
             )
@@ -154,10 +154,10 @@ class ChatSessionRegistry:
             session.pending_calls.pop(request_id, None)
 
     async def complete_tool_call(self, message: InvokeResultMessage) -> None:
-        session = await self.get(message.chat_session_id)
+        session = await self.get(message.chatSessionId)
         if session is None:
             return
-        future = session.pending_calls.get(message.request_id)
+        future = session.pending_calls.get(message.requestId)
         if future is None or future.done():
             return
         if message.ok:
