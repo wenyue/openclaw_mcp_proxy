@@ -3,11 +3,11 @@ import queue
 import threading
 import asyncio
 import unittest
-import warnings
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
+from anyio.streams.memory import MemoryObjectReceiveStream
 from fastapi import WebSocket
 from fastapi.testclient import TestClient
 from starlette.routing import Mount
@@ -17,12 +17,13 @@ from app.chat_session_registry import ChatSessionRegistry
 from app.models import InvokeResultMessage
 from app.main import create_app
 
-warnings.filterwarnings(
-    "ignore",
-    message=r"Unclosed <MemoryObjectReceiveStream at .*?>",
-    category=ResourceWarning,
-)
 
+def _close_receive_stream_on_gc(self) -> None:
+    if not self._closed:
+        self.close()
+
+
+MemoryObjectReceiveStream.__del__ = _close_receive_stream_on_gc
 
 class ProxyIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
@@ -47,7 +48,7 @@ class ProxyIntegrationTest(unittest.TestCase):
         response = self.client.post(
             "/v1/mcp/",
             headers=self._mcp_headers(
-                {"X-OpenClaw-Chat-Session": session["chatSessionId"]},
+                {"X-OpenClaw-Chat-Session": session["mcpSessionId"]},
             ),
             json=self._initialize_payload(),
         )
@@ -59,7 +60,7 @@ class ProxyIntegrationTest(unittest.TestCase):
 
         with self.assertNoLogs("openclaw_mcp_proxy", level="ERROR"):
             with self.client.websocket_connect(
-                f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+                f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
             ):
                 pass
 
@@ -67,7 +68,7 @@ class ProxyIntegrationTest(unittest.TestCase):
         session = self._create_chat_session()
 
         response = self.client.delete(
-            f"/v1/chat/sessions/{session['chatSessionId']}",
+            f"/v1/chat/sessions/{session['mcpSessionId']}",
         )
 
         self.assertEqual(200, response.status_code, response.text)
@@ -81,7 +82,6 @@ class ProxyIntegrationTest(unittest.TestCase):
                 "deviceId": "test-device",
                 "deviceName": "test-device-name",
                 "appVersion": "1.0.0",
-                "chatId": "test-chat",
                 "tools": [
                     {
                         "name": "echo_text",
@@ -100,16 +100,16 @@ class ProxyIntegrationTest(unittest.TestCase):
         )
 
         self.assertEqual(200, response.status_code, response.text)
-        self.assertEqual({"chatSessionId": response.json()["chatSessionId"]}, response.json())
+        self.assertEqual({"mcpSessionId": response.json()["mcpSessionId"]}, response.json())
 
     def test_delete_chat_session_closes_attached_bridge(self) -> None:
         session = self._create_chat_session()
 
         with self.client.websocket_connect(
-            f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+            f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
         ) as websocket:
             response = self.client.delete(
-                f"/v1/chat/sessions/{session['chatSessionId']}",
+                f"/v1/chat/sessions/{session['mcpSessionId']}",
             )
 
             self.assertEqual(200, response.status_code, response.text)
@@ -119,12 +119,12 @@ class ProxyIntegrationTest(unittest.TestCase):
         session = self._create_chat_session()
 
         with self.client.websocket_connect(
-            f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+            f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
         ) as websocket:
-            self._expire_session_in_registry(session["chatSessionId"])
+            self._expire_session_in_registry(session["mcpSessionId"])
 
             response = self.client.post(
-                f"/v1/mcp/{session['chatSessionId']}",
+                f"/v1/mcp/{session['mcpSessionId']}",
                 headers=self._mcp_headers(),
                 json=self._initialize_payload(),
             )
@@ -134,14 +134,14 @@ class ProxyIntegrationTest(unittest.TestCase):
 
     def test_second_bridge_attach_is_rejected_with_first_bridge_preserved(self) -> None:
         session = self._create_chat_session_with_tool()
-        mcp_path = f"/v1/mcp/{session['chatSessionId']}"
+        mcp_path = f"/v1/mcp/{session['mcpSessionId']}"
 
         with self.client.websocket_connect(
-            f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+            f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
         ) as first_bridge:
             with self.assertRaises(WebSocketDisconnect) as second_disconnect:
                 with self.client.websocket_connect(
-                    f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+                    f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
                 ):
                     pass
 
@@ -156,7 +156,7 @@ class ProxyIntegrationTest(unittest.TestCase):
             first_bridge.send_json(
                 {
                     "type": "invoke_result",
-                    "chatSessionId": session["chatSessionId"],
+                    "mcpSessionId": session["mcpSessionId"],
                     "requestId": invoke["requestId"],
                     "ok": True,
                     "content": {"ok": True},
@@ -170,8 +170,8 @@ class ProxyIntegrationTest(unittest.TestCase):
     def test_delete_chat_session_is_idempotent(self) -> None:
         session = self._create_chat_session()
 
-        first = self.client.delete(f"/v1/chat/sessions/{session['chatSessionId']}")
-        second = self.client.delete(f"/v1/chat/sessions/{session['chatSessionId']}")
+        first = self.client.delete(f"/v1/chat/sessions/{session['mcpSessionId']}")
+        second = self.client.delete(f"/v1/chat/sessions/{session['mcpSessionId']}")
 
         self.assertEqual(200, first.status_code, first.text)
         self.assertEqual(200, second.status_code, second.text)
@@ -180,7 +180,7 @@ class ProxyIntegrationTest(unittest.TestCase):
     def test_tool_call_without_bridge_returns_not_bridged_error(self) -> None:
         session = self._create_chat_session_with_tool()
         response = self.client.post(
-            f"/v1/mcp/{session['chatSessionId']}",
+            f"/v1/mcp/{session['mcpSessionId']}",
             headers=self._mcp_headers(),
             json=self._tool_call_payload(),
         )
@@ -191,10 +191,10 @@ class ProxyIntegrationTest(unittest.TestCase):
 
     def test_inflight_tool_call_fails_when_session_is_invalidated(self) -> None:
         session = self._create_chat_session_with_tool()
-        mcp_path = f"/v1/mcp/{session['chatSessionId']}"
+        mcp_path = f"/v1/mcp/{session['mcpSessionId']}"
 
         with self.client.websocket_connect(
-            f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+            f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
         ) as websocket:
             future = self._submit_tool_call(self.client, mcp_path)
             invoke = self._receive_json(websocket)
@@ -202,7 +202,7 @@ class ProxyIntegrationTest(unittest.TestCase):
             self.assertEqual("invoke_tool", invoke["type"])
 
             response = self.client.delete(
-                f"/v1/chat/sessions/{session['chatSessionId']}",
+                f"/v1/chat/sessions/{session['mcpSessionId']}",
             )
             self.assertEqual(200, response.status_code, response.text)
 
@@ -214,21 +214,21 @@ class ProxyIntegrationTest(unittest.TestCase):
 
     def test_ttl_cleanup_skips_session_with_pending_call(self) -> None:
         session = self._create_chat_session_with_tool()
-        mcp_path = f"/v1/mcp/{session['chatSessionId']}"
+        mcp_path = f"/v1/mcp/{session['mcpSessionId']}"
 
         with self.client.websocket_connect(
-            f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+            f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
         ) as websocket:
             future = self._submit_tool_call(self.client, mcp_path)
             invoke = self._receive_json(websocket)
 
-            self._expire_session_in_registry(session["chatSessionId"])
+            self._expire_session_in_registry(session["mcpSessionId"])
             self._run_cleanup_once()
 
             websocket.send_json(
                 {
                     "type": "invoke_result",
-                    "chatSessionId": session["chatSessionId"],
+                    "mcpSessionId": session["mcpSessionId"],
                     "requestId": invoke["requestId"],
                     "ok": True,
                     "content": {"ok": True},
@@ -241,15 +241,15 @@ class ProxyIntegrationTest(unittest.TestCase):
 
     def test_read_path_expiry_skips_session_with_pending_call(self) -> None:
         session = self._create_chat_session_with_tool()
-        mcp_path = f"/v1/mcp/{session['chatSessionId']}"
+        mcp_path = f"/v1/mcp/{session['mcpSessionId']}"
 
         with self.client.websocket_connect(
-            f"/v1/chat/sessions/{session['chatSessionId']}/bridge",
+            f"/v1/chat/sessions/{session['mcpSessionId']}/bridge",
         ) as websocket:
             future = self._submit_tool_call(self.client, mcp_path)
             invoke = self._receive_json(websocket)
 
-            self._expire_session_in_registry(session["chatSessionId"])
+            self._expire_session_in_registry(session["mcpSessionId"])
             initialize_response = self.client.post(
                 mcp_path,
                 headers=self._mcp_headers(),
@@ -261,7 +261,7 @@ class ProxyIntegrationTest(unittest.TestCase):
             websocket.send_json(
                 {
                     "type": "invoke_result",
-                    "chatSessionId": session["chatSessionId"],
+                    "mcpSessionId": session["mcpSessionId"],
                     "requestId": invoke["requestId"],
                     "ok": True,
                     "content": {"ok": True},
@@ -292,7 +292,6 @@ class ProxyIntegrationTest(unittest.TestCase):
                 user_id="test-user",
                 device_id="test-device",
                 device_name="test-device-name",
-                chat_id="test-chat",
                 tools=[],
             )
             session.pending_calls[request_id] = RaceyFuture()
@@ -301,7 +300,7 @@ class ProxyIntegrationTest(unittest.TestCase):
         self.client.portal.call(
             registry.complete_tool_call,
             InvokeResultMessage(
-                chatSessionId="session-1",
+                mcpSessionId="session-1",
                 requestId=request_id,
                 ok=True,
                 content={"ok": True},
@@ -310,7 +309,7 @@ class ProxyIntegrationTest(unittest.TestCase):
 
     def test_failed_bridge_accept_does_not_leave_stale_bridge(self) -> None:
         session = self._create_chat_session_with_tool()
-        bridge_path = f"/v1/chat/sessions/{session['chatSessionId']}/bridge"
+        bridge_path = f"/v1/chat/sessions/{session['mcpSessionId']}/bridge"
 
         with patch.object(WebSocket, "accept", autospec=True, side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):
@@ -336,7 +335,6 @@ class ProxyIntegrationTest(unittest.TestCase):
                 "deviceId": "test-device",
                 "deviceName": "test-device-name",
                 "appVersion": "1.0.0",
-                "chatId": "test-chat",
                 "tools": tools or [],
             },
         )

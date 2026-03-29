@@ -39,11 +39,10 @@ def create_router(
             user_id=payload.userId,
             device_id=payload.deviceId,
             device_name=payload.deviceName,
-            chat_id=payload.chatId,
             tools=payload.tools,
         )
         return CreateChatSessionResponse(
-            chatSessionId=chat_session_id,
+            mcpSessionId=chat_session_id,
         )
 
     @router.delete(

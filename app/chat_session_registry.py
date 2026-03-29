@@ -25,7 +25,6 @@ class ChatSession:
     user_id: str
     device_id: str
     device_name: str
-    chat_id: str
     tools: list[ToolSchema]
     expires_at: datetime
     tool_name_map: dict[str, str]
@@ -50,7 +49,6 @@ class ChatSessionRegistry:
         user_id: str,
         device_id: str,
         device_name: str,
-        chat_id: str,
         tools: list[ToolSchema],
     ) -> ChatSession:
         tool_names = [tool.name for tool in tools]
@@ -62,7 +60,6 @@ class ChatSessionRegistry:
             user_id=user_id,
             device_id=device_id,
             device_name=device_name,
-            chat_id=chat_id,
             tools=tools,
             expires_at=self._next_expiry(),
             tool_name_map={tool.name: tool.name for tool in tools},
@@ -181,7 +178,7 @@ class ChatSessionRegistry:
         try:
             await bridge.send_json(
                 InvokeToolMessage(
-                    chatSessionId=chat_session_id,
+                    mcpSessionId=chat_session_id,
                     requestId=request_id,
                     toolName=tool_name,
                     arguments=arguments,
@@ -211,7 +208,7 @@ class ChatSessionRegistry:
 
     async def complete_tool_call(self, message: InvokeResultMessage) -> None:
         async with self._lock:
-            session = self._sessions.get(message.chatSessionId)
+            session = self._sessions.get(message.mcpSessionId)
             if session is None:
                 return
             future = session.pending_calls.pop(message.requestId, None)

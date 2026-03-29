@@ -14,16 +14,15 @@ class CreateChatSessionRequest(BaseModel):
     deviceId: str
     deviceName: str = ""
     appVersion: str
-    chatId: str
     tools: list[ToolSchema] = Field(default_factory=list)
 
 
 class CreateChatSessionResponse(BaseModel):
-    chatSessionId: str
+    mcpSessionId: str
 
 class InvokeToolMessage(BaseModel):
     type: str = "invoke_tool"
-    chatSessionId: str
+    mcpSessionId: str
     requestId: str
     toolName: str
     arguments: dict = Field(default_factory=dict)
@@ -31,7 +30,7 @@ class InvokeToolMessage(BaseModel):
 
 class InvokeResultMessage(BaseModel):
     type: str = "invoke_result"
-    chatSessionId: str
+    mcpSessionId: str
     requestId: str
     ok: bool
     content: dict | None = None
