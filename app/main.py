@@ -11,7 +11,9 @@ from .auth import require_bearer_token
 from .chat_session_api import create_router
 from .chat_session_registry import ChatSessionRegistry
 from .config import load_config
-from .openclaw_proxy_mcp import build_chat_mcp_app
+from .openclaw_proxy_mcp import build_chat_http_mcp_app
+
+
 class DynamicMcpProxyApp:
     def __init__(self, registry: ChatSessionRegistry, openclaw_token: str) -> None:
         self._registry = registry
@@ -66,7 +68,11 @@ class DynamicMcpProxyApp:
             await response(scope, receive, send)
             return
 
-        mcp_app = build_chat_mcp_app(self._registry, chat_session_id, session.tools)
+        mcp_app = build_chat_http_mcp_app(
+            self._registry,
+            chat_session_id,
+            session.tools,
+        )
         new_scope = dict(scope)
         new_scope["path"] = stripped_path
         new_scope["raw_path"] = stripped_path.encode("utf-8")

@@ -5,7 +5,7 @@ OpenClaw MCP Proxy is a small FastAPI + FastMCP service that exposes app-registe
 It has two responsibilities:
 
 - Manage chat-scoped proxy sessions over HTTP and WebSocket.
-- Expose the registered tool set as a stateless HTTP MCP endpoint.
+- Expose the registered tool set as MCP over either stateless HTTP or stdio.
 
 ## Architecture
 
@@ -133,6 +133,21 @@ The MCP endpoint also supports header-based session routing:
 
 This is useful when the MCP client configuration prefers a stable URL and injects the session ID through headers.
 
+## MCP Transports
+
+The proxy now supports two MCP-facing transports:
+
+- HTTP: multi-session, routed by path or `X-OpenClaw-Chat-Session`
+- stdio: single-session, bound at process startup via `--chat-session-id`
+
+The stdio transport is implemented as a local proxy process in front of the HTTP MCP endpoint. The
+actual tool execution path is unchanged:
+
+1. The app registers a chat session over HTTP.
+2. The app connects the WebSocket bridge.
+3. The stdio process proxies MCP traffic to `POST /v1/mcp/{chat_session_id}`.
+4. The HTTP proxy forwards tool execution to the app over the existing bridge.
+
 ### `GET /health`
 
 Returns plain text `ok`.
@@ -171,6 +186,7 @@ Environment variables:
 | --- | --- | --- |
 | `OPENCLAW_PROXY_APP_TOKEN` | `""` | Bearer token for app registration and bridge endpoints. |
 | `OPENCLAW_PROXY_OPENCLAW_TOKEN` | `""` | Bearer token for MCP requests from OpenClaw. |
+| `OPENCLAW_PROXY_SERVER_URL` | `http://127.0.0.1:8000` | Base URL used by the stdio proxy process to reach the HTTP proxy. |
 | `OPENCLAW_PROXY_SESSION_TTL_SECONDS` | `300` | Session time-to-live in seconds. |
 | `OPENCLAW_PROXY_TOOL_TIMEOUT_SECONDS` | `120` | Tool call timeout in seconds. |
 
@@ -179,6 +195,7 @@ Example `.env`:
 ```env
 OPENCLAW_PROXY_APP_TOKEN=replace-me
 OPENCLAW_PROXY_OPENCLAW_TOKEN=replace-me
+OPENCLAW_PROXY_SERVER_URL=http://127.0.0.1:8000
 OPENCLAW_PROXY_SESSION_TTL_SECONDS=300
 OPENCLAW_PROXY_TOOL_TIMEOUT_SECONDS=120
 ```
@@ -200,6 +217,22 @@ pip install fastapi fastmcp pydantic uvicorn
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+### Start the stdio MCP proxy
+
+After creating a chat session and connecting the app bridge, you can expose that session over stdio:
+
+```bash
+python -m app.stdio_main --chat-session-id <chat_session_id>
+```
+
+Optional flags:
+
+```bash
+python -m app.stdio_main \
+  --chat-session-id <chat_session_id> \
+  --proxy-base-url http://127.0.0.1:8000
 ```
 
 ### Check health
@@ -239,12 +272,35 @@ You can also connect directly to the session-specific URL returned by session cr
 https://your-proxy-host.example.com/v1/mcp/<chat_session_id>
 ```
 
+Stdio example:
+
+```json
+{
+  "mcpServers": {
+    "otakuroom-chat-mcp": {
+      "transport": "stdio",
+      "command": "python",
+      "args": [
+        "-m",
+        "app.stdio_main",
+        "--chat-session-id",
+        "${CHAT_SESSION_ID}"
+      ],
+      "env": {
+        "OPENCLAW_PROXY_SERVER_URL": "http://127.0.0.1:8000",
+        "OPENCLAW_PROXY_OPENCLAW_TOKEN": "${OPENCLAW_PROXY_OPENCLAW_TOKEN}"
+      }
+    }
+  }
+}
+```
+
 ## How Tool Forwarding Works
 
 1. The app creates a chat session and sends its available tool definitions.
 2. The proxy stores the session in memory.
 3. OpenClaw calls the session MCP endpoint.
-4. The proxy dynamically builds a FastMCP app for that session and tool set.
+4. The proxy dynamically builds a FastMCP server for that session and tool set.
 5. When OpenClaw invokes a tool, the proxy sends `invoke_tool` over the WebSocket bridge.
 6. The app executes the tool locally and sends `invoke_result`.
 7. The proxy returns the tool result to the MCP caller.
@@ -262,6 +318,7 @@ Current coverage includes:
 - session-specific MCP routing via `mcp_url`
 - header-based MCP routing via `X-OpenClaw-Chat-Session`
 - normal WebSocket bridge disconnect without error-level logging
+- shared MCP server construction and stdio proxy bootstrap behavior
 
 ## Operational Notes
 
@@ -280,7 +337,9 @@ Current coverage includes:
   - `Authorization`
   - `X-OpenClaw-Chat-Session`
 
-- Tool handlers are generated dynamically from the provided `input_schema`.
+- HTTP MCP is served directly from the in-process session registry.
+- stdio MCP runs as a separate proxy process and forwards to the HTTP MCP endpoint.
+- Tool schemas are registered dynamically from the provided `input_schema`.
   Only trusted app clients should be allowed to register tool definitions.
 
 ## Limitations
