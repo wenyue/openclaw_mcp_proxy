@@ -78,7 +78,6 @@ class ProxyIntegrationTest(unittest.TestCase):
         response = self.client.post(
             "/v1/chat/sessions",
             json={
-                "userId": "test-user",
                 "deviceId": "test-device",
                 "deviceName": "test-device-name",
                 "appVersion": "1.0.0",
@@ -289,7 +288,6 @@ class ProxyIntegrationTest(unittest.TestCase):
         async def seed() -> None:
             session = await registry.register(
                 session_id="session-1",
-                user_id="test-user",
                 device_id="test-device",
                 device_name="test-device-name",
                 tools=[],
@@ -331,7 +329,6 @@ class ProxyIntegrationTest(unittest.TestCase):
         response = client.post(
             "/v1/chat/sessions",
             json={
-                "userId": "test-user",
                 "deviceId": "test-device",
                 "deviceName": "test-device-name",
                 "appVersion": "1.0.0",

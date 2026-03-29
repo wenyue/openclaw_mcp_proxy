@@ -36,7 +36,6 @@ def create_router(
         session_id = uuid4().hex
         await registry.register(
             session_id=session_id,
-            user_id=payload.userId,
             device_id=payload.deviceId,
             device_name=payload.deviceName,
             tools=payload.tools,

@@ -1,0 +1,6 @@
+anyio
+fastapi
+fastmcp
+httpx
+pydantic
+uvicorn

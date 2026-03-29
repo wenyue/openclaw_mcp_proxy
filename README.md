@@ -35,7 +35,6 @@ Request body:
 
 ```json
 {
-  "user_id": "user-1",
   "device_id": "device-1",
   "device_name": "desktop",
   "app_version": "1.0.0",
@@ -210,7 +209,7 @@ OPENCLAW_PROXY_TOOL_TIMEOUT_SECONDS=120
 ### Install dependencies
 
 ```bash
-pip install fastapi fastmcp pydantic uvicorn
+pip install -r requirements.txt
 ```
 
 ### Start the server

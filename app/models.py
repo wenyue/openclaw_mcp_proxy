@@ -10,7 +10,6 @@ class ToolSchema(BaseModel):
 
 
 class CreateChatSessionRequest(BaseModel):
-    userId: str
     deviceId: str
     deviceName: str = ""
     appVersion: str

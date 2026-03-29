@@ -22,7 +22,6 @@ class ChatSessionState(str, Enum):
 @dataclass(slots=True)
 class ChatSession:
     session_id: str
-    user_id: str
     device_id: str
     device_name: str
     tools: list[ToolSchema]
@@ -46,7 +45,6 @@ class ChatSessionRegistry:
         self,
         *,
         session_id: str,
-        user_id: str,
         device_id: str,
         device_name: str,
         tools: list[ToolSchema],
@@ -57,7 +55,6 @@ class ChatSessionRegistry:
 
         session = ChatSession(
             session_id=session_id,
-            user_id=user_id,
             device_id=device_id,
             device_name=device_name,
             tools=tools,
@@ -168,10 +165,8 @@ class ChatSessionRegistry:
             session.pending_calls[request_id] = future
             session.expires_at = self._next_expiry()
             bridge = session.bridge
-            user_id = session.user_id
         log_tool_call(
             session_id=session_id,
-            user_id=user_id,
             tool_name=tool_name,
             request_id=request_id,
         )
@@ -187,7 +182,6 @@ class ChatSessionRegistry:
             result = await asyncio.wait_for(future, timeout=self._tool_timeout_seconds)
             log_tool_result(
                 session_id=session_id,
-                user_id=user_id,
                 tool_name=tool_name,
                 request_id=request_id,
                 ok=True,
@@ -196,7 +190,6 @@ class ChatSessionRegistry:
         except Exception:
             log_tool_result(
                 session_id=session_id,
-                user_id=user_id,
                 tool_name=tool_name,
                 request_id=request_id,
                 ok=False,
