@@ -16,20 +16,20 @@ sequenceDiagram
     participant OpenClawClient
 
     AppClient->>ProxyServer: POST /v1/chat/sessions
-    ProxyServer-->>AppClient: chat_session_id, bridge_url, mcp_url
-    AppClient->>ProxyServer: WS /v1/chat/sessions/{chat_session_id}/bridge
-    OpenClawClient->>ProxyServer: POST /v1/mcp/{chat_session_id}
+    ProxyServer-->>AppClient: mcpSessionId, bridge_url, mcp_url
+    AppClient->>ProxyServer: WS /v1/chat/sessions/{session_id}/bridge
+    OpenClawClient->>ProxyServer: POST /v1/mcp/{session_id}
     ProxyServer->>AppClient: invoke_tool
     AppClient-->>ProxyServer: invoke_result
     ProxyServer-->>OpenClawClient: MCP tool result
-    AppClient->>ProxyServer: DELETE /v1/chat/sessions/{chat_session_id}
+    AppClient->>ProxyServer: DELETE /v1/chat/sessions/{session_id}
 ```
 
 ## Endpoints
 
 ### `POST /v1/chat/sessions`
 
-Creates a chat session and returns the bridge and MCP endpoints for that session.
+Creates a session and returns the bridge and MCP endpoints for that session.
 
 Request body:
 
@@ -62,15 +62,15 @@ Response body:
 
 ```json
 {
-  "chat_session_id": "session-id",
+  "mcpSessionId": "session-id",
   "bridge_url": "ws://127.0.0.1:8000/v1/chat/sessions/session-id/bridge",
   "mcp_url": "http://127.0.0.1:8000/v1/mcp/session-id"
 }
 ```
 
-### `DELETE /v1/chat/sessions/{chat_session_id}`
+### `DELETE /v1/chat/sessions/{session_id}`
 
-Deletes a chat session.
+Deletes a session.
 
 Response body:
 
@@ -80,9 +80,9 @@ Response body:
 }
 ```
 
-### `WS /v1/chat/sessions/{chat_session_id}/bridge`
+### `WS /v1/chat/sessions/{session_id}/bridge`
 
-Connects the app-side execution bridge for a registered chat session.
+Connects the app-side execution bridge for a registered session.
 
 Bridge messages:
 
@@ -96,7 +96,7 @@ Proxy -> app:
 ```json
 {
   "type": "invoke_tool",
-  "chat_session_id": "session-id",
+  "mcpSessionId": "session-id",
   "request_id": "session-id:1",
   "tool_name": "echo_text",
   "arguments": {
@@ -110,7 +110,7 @@ App -> proxy:
 ```json
 {
   "type": "invoke_result",
-  "chat_session_id": "session-id",
+  "mcpSessionId": "session-id",
   "request_id": "session-id:1",
   "ok": true,
   "content": {
@@ -119,17 +119,17 @@ App -> proxy:
 }
 ```
 
-### `POST /v1/mcp/{chat_session_id}`
+### `POST /v1/mcp/{session_id}`
 
-Exposes the registered tools for a specific chat session as a stateless HTTP MCP endpoint.
+Exposes the registered tools for a specific session as a stateless HTTP MCP endpoint.
 
 This is the simplest way to connect OpenClaw to a specific registered session.
 
-### `POST /v1/mcp/` with `X-OpenClaw-Chat-Session`
+### `POST /v1/mcp/` with `MCP-Session-Id`
 
 The MCP endpoint also supports header-based session routing:
 
-- Header: `X-OpenClaw-Chat-Session: <chat_session_id>`
+- Header: `MCP-Session-Id: <session_id>`
 
 This is useful when the MCP client configuration prefers a stable URL and injects the session ID through headers.
 
@@ -137,15 +137,15 @@ This is useful when the MCP client configuration prefers a stable URL and inject
 
 The proxy now supports two MCP-facing transports:
 
-- HTTP: multi-session, routed by path or `X-OpenClaw-Chat-Session`
-- stdio: single-session, bound at process startup via `--chat-session-id`
+- HTTP: multi-session, routed by path or `MCP-Session-Id`
+- stdio: single-session, bound during MCP `initialize` via `mcpSessionId`
 
 The stdio transport is implemented as a local proxy process in front of the HTTP MCP endpoint. The
 actual tool execution path is unchanged:
 
-1. The app registers a chat session over HTTP.
+1. The app registers a session over HTTP.
 2. The app connects the WebSocket bridge.
-3. The stdio process proxies MCP traffic to `POST /v1/mcp/{chat_session_id}`.
+3. The stdio process stores `initialize.params.mcpSessionId` and proxies MCP traffic to `POST /v1/mcp` with header `MCP-Session-Id`.
 4. The HTTP proxy forwards tool execution to the app over the existing bridge.
 
 ### `GET /health`
@@ -159,8 +159,8 @@ The proxy uses two independent bearer tokens:
 - `OPENCLAW_PROXY_APP_TOKEN`
   Used by:
   - `POST /v1/chat/sessions`
-  - `DELETE /v1/chat/sessions/{chat_session_id}`
-  - `WS /v1/chat/sessions/{chat_session_id}/bridge`
+  - `DELETE /v1/chat/sessions/{session_id}`
+  - `WS /v1/chat/sessions/{session_id}/bridge`
 
 - `OPENCLAW_PROXY_OPENCLAW_TOKEN`
   Used by:
@@ -176,7 +176,7 @@ Do not leave either token empty outside local development.
 WebSocket close codes:
 
 - `4401`: invalid app token
-- `4404`: unknown `chat_session_id`
+- `4404`: unknown `session_id`
 
 ## Configuration
 
@@ -221,18 +221,36 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ### Start the stdio MCP proxy
 
-After creating a chat session and connecting the app bridge, you can expose that session over stdio:
+After creating a session and connecting the app bridge, you can expose that session over stdio:
 
 ```bash
-python -m app.stdio_main --chat-session-id <chat_session_id>
+python -m app.stdio_main
 ```
 
 Optional flags:
 
 ```bash
 python -m app.stdio_main \
-  --chat-session-id <chat_session_id> \
   --proxy-base-url http://127.0.0.1:8000
+```
+
+The stdio client must send `mcpSessionId` in `initialize.params`, for example:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-03-26",
+    "capabilities": {},
+    "clientInfo": {
+      "name": "your-client",
+      "version": "1.0.0"
+    },
+    "mcpSessionId": "<session_id>"
+  }
+}
 ```
 
 ### Check health
@@ -259,7 +277,7 @@ Header-routed example:
       "url": "https://your-proxy-host.example.com/v1/mcp",
       "headers": {
         "Authorization": "Bearer ${OPENCLAW_PROXY_OPENCLAW_TOKEN}",
-        "X-OpenClaw-Chat-Session": "${CHAT_SESSION_ID}"
+        "MCP-Session-Id": "${SESSION_ID}"
       }
     }
   }
@@ -269,7 +287,7 @@ Header-routed example:
 You can also connect directly to the session-specific URL returned by session creation, for example:
 
 ```text
-https://your-proxy-host.example.com/v1/mcp/<chat_session_id>
+https://your-proxy-host.example.com/v1/mcp/<session_id>
 ```
 
 Stdio example:
@@ -282,9 +300,7 @@ Stdio example:
       "command": "python",
       "args": [
         "-m",
-        "app.stdio_main",
-        "--chat-session-id",
-        "${CHAT_SESSION_ID}"
+        "app.stdio_main"
       ],
       "env": {
         "OPENCLAW_PROXY_SERVER_URL": "http://127.0.0.1:8000",
@@ -297,7 +313,7 @@ Stdio example:
 
 ## How Tool Forwarding Works
 
-1. The app creates a chat session and sends its available tool definitions.
+1. The app creates a session and sends its available tool definitions.
 2. The proxy stores the session in memory.
 3. OpenClaw calls the session MCP endpoint.
 4. The proxy dynamically builds a FastMCP server for that session and tool set.
@@ -316,7 +332,7 @@ python -m unittest tests.test_proxy_integration
 Current coverage includes:
 
 - session-specific MCP routing via `mcp_url`
-- header-based MCP routing via `X-OpenClaw-Chat-Session`
+- header-based MCP routing via `MCP-Session-Id`
 - normal WebSocket bridge disconnect without error-level logging
 - shared MCP server construction and stdio proxy bootstrap behavior
 
@@ -326,16 +342,16 @@ Current coverage includes:
   The proxy is not currently designed for stateless multi-instance deployment without sticky routing or shared session state.
 
 - Tool calls require an active bridge connection.
-  If the session exists but the bridge is disconnected, tool calls fail with `Chat bridge is not connected.`
+  If the session exists but the bridge is disconnected, tool calls fail with `Bridge is not connected.`
 
 - Sessions expire automatically.
   A background cleanup loop runs every 15 seconds and removes expired sessions.
 
-- Registered tool names must be unique within a chat session.
+- Registered tool names must be unique within a session.
 
 - Reverse proxies must support WebSocket upgrade and must forward:
   - `Authorization`
-  - `X-OpenClaw-Chat-Session`
+  - `MCP-Session-Id`
 
 - HTTP MCP is served directly from the in-process session registry.
 - stdio MCP runs as a separate proxy process and forwards to the HTTP MCP endpoint.

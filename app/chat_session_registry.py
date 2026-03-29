@@ -21,7 +21,7 @@ class ChatSessionState(str, Enum):
 
 @dataclass(slots=True)
 class ChatSession:
-    chat_session_id: str
+    session_id: str
     user_id: str
     device_id: str
     device_name: str
@@ -45,7 +45,7 @@ class ChatSessionRegistry:
     async def register(
         self,
         *,
-        chat_session_id: str,
+        session_id: str,
         user_id: str,
         device_id: str,
         device_name: str,
@@ -53,10 +53,10 @@ class ChatSessionRegistry:
     ) -> ChatSession:
         tool_names = [tool.name for tool in tools]
         if len(set(tool_names)) != len(tool_names):
-            raise ValueError("Tool names must be unique per chat session.")
+            raise ValueError("Tool names must be unique per session.")
 
         session = ChatSession(
-            chat_session_id=chat_session_id,
+            session_id=session_id,
             user_id=user_id,
             device_id=device_id,
             device_name=device_name,
@@ -65,12 +65,12 @@ class ChatSessionRegistry:
             tool_name_map={tool.name: tool.name for tool in tools},
         )
         async with self._lock:
-            self._sessions[chat_session_id] = session
+            self._sessions[session_id] = session
         return session
 
-    async def unregister(self, chat_session_id: str) -> None:
+    async def unregister(self, session_id: str) -> None:
         async with self._lock:
-            session = self._sessions.pop(chat_session_id, None)
+            session = self._sessions.pop(session_id, None)
             if session is None:
                 return
             session.state = ChatSessionState.INVALIDATING
@@ -81,24 +81,24 @@ class ChatSessionRegistry:
 
         for future in pending_calls:
             if not future.done():
-                future.set_exception(RuntimeError("Chat session was unregistered."))
+                future.set_exception(RuntimeError("Session was unregistered."))
         if bridge is not None:
             await bridge.close()
         session.state = ChatSessionState.REMOVED
 
-    async def attach_bridge(self, chat_session_id: str, websocket: WebSocket) -> ChatSession:
+    async def attach_bridge(self, session_id: str, websocket: WebSocket) -> ChatSession:
         expired = False
         async with self._lock:
-            session = self._sessions.get(chat_session_id)
+            session = self._sessions.get(session_id)
             if session is None or session.state in {
                 ChatSessionState.INVALIDATING,
                 ChatSessionState.REMOVED,
             }:
-                raise KeyError(chat_session_id)
+                raise KeyError(session_id)
             if self._is_ttl_expired(session):
                 expired = True
             elif session.bridge is not None and session.bridge is not websocket:
-                raise RuntimeError("Chat bridge already connected.")
+                raise RuntimeError("Bridge already connected.")
             else:
                 session.bridge = websocket
                 session.expires_at = self._next_expiry()
@@ -106,12 +106,12 @@ class ChatSessionRegistry:
                 return session
 
         if expired:
-            await self.unregister(chat_session_id)
-        raise KeyError(chat_session_id)
+            await self.unregister(session_id)
+        raise KeyError(session_id)
 
-    async def detach_bridge(self, chat_session_id: str, websocket: WebSocket) -> None:
+    async def detach_bridge(self, session_id: str, websocket: WebSocket) -> None:
         async with self._lock:
-            session = self._sessions.get(chat_session_id)
+            session = self._sessions.get(session_id)
             if session is None:
                 return
             if session.bridge is websocket:
@@ -119,16 +119,16 @@ class ChatSessionRegistry:
                 if session.state == ChatSessionState.BRIDGED:
                     session.state = ChatSessionState.REGISTERED
 
-    async def set_mcp_app(self, chat_session_id: str, mcp_app: Any) -> None:
-        session = await self.get(chat_session_id)
+    async def set_mcp_app(self, session_id: str, mcp_app: Any) -> None:
+        session = await self.get(session_id)
         if session is None:
-            raise KeyError(chat_session_id)
+            raise KeyError(session_id)
         session.mcp_app = mcp_app
 
-    async def get(self, chat_session_id: str) -> ChatSession | None:
+    async def get(self, session_id: str) -> ChatSession | None:
         expired = False
         async with self._lock:
-            session = self._sessions.get(chat_session_id)
+            session = self._sessions.get(session_id)
             if session is None:
                 return None
             if session.state in {
@@ -141,28 +141,28 @@ class ChatSessionRegistry:
             else:
                 return session
         if expired:
-            await self.unregister(chat_session_id)
+            await self.unregister(session_id)
         return None
 
     async def call_tool(
         self,
-        chat_session_id: str,
+        session_id: str,
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        session = await self.get(chat_session_id)
+        session = await self.get(session_id)
         if session is None:
-            raise RuntimeError("Chat session is not active.")
+            raise RuntimeError("Session is not active.")
         async with self._lock:
-            current_session = self._sessions.get(chat_session_id)
+            current_session = self._sessions.get(session_id)
             if current_session is not session or session.state in {
                 ChatSessionState.INVALIDATING,
                 ChatSessionState.REMOVED,
             }:
-                raise RuntimeError("Chat session is not active.")
+                raise RuntimeError("Session is not active.")
             if session.state != ChatSessionState.BRIDGED or session.bridge is None:
-                raise RuntimeError("Chat bridge is not connected.")
-            request_id = f"{chat_session_id}:{session.next_request_id}"
+                raise RuntimeError("Bridge is not connected.")
+            request_id = f"{session_id}:{session.next_request_id}"
             session.next_request_id += 1
             future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
             session.pending_calls[request_id] = future
@@ -170,7 +170,7 @@ class ChatSessionRegistry:
             bridge = session.bridge
             user_id = session.user_id
         log_tool_call(
-            chat_session_id=chat_session_id,
+            session_id=session_id,
             user_id=user_id,
             tool_name=tool_name,
             request_id=request_id,
@@ -178,7 +178,7 @@ class ChatSessionRegistry:
         try:
             await bridge.send_json(
                 InvokeToolMessage(
-                    mcpSessionId=chat_session_id,
+                    mcpSessionId=session_id,
                     requestId=request_id,
                     toolName=tool_name,
                     arguments=arguments,
@@ -186,7 +186,7 @@ class ChatSessionRegistry:
             )
             result = await asyncio.wait_for(future, timeout=self._tool_timeout_seconds)
             log_tool_result(
-                chat_session_id=chat_session_id,
+                session_id=session_id,
                 user_id=user_id,
                 tool_name=tool_name,
                 request_id=request_id,
@@ -195,7 +195,7 @@ class ChatSessionRegistry:
             return result
         except Exception:
             log_tool_result(
-                chat_session_id=chat_session_id,
+                session_id=session_id,
                 user_id=user_id,
                 tool_name=tool_name,
                 request_id=request_id,

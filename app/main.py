@@ -19,6 +19,8 @@ from .chat_session_registry import ChatSessionRegistry
 from .config import load_config
 from .openclaw_proxy_mcp import create_chat_mcp_server
 
+_MCP_SESSION_ID_HEADER = "mcp-session-id"
+
 
 class DynamicMcpProxyApp:
     def __init__(self, registry: ChatSessionRegistry, openclaw_token: str) -> None:
@@ -32,7 +34,7 @@ class DynamicMcpProxyApp:
             return
 
         headers = {
-            key.decode("latin-1"): value.decode("latin-1")
+            key.decode("latin-1").lower(): value.decode("latin-1")
             for key, value in scope.get("headers", [])
         }
         try:
@@ -50,34 +52,34 @@ class DynamicMcpProxyApp:
         root_path = scope.get("root_path", "") or ""
         relative_path = _strip_root_path(raw_path, root_path)
         segments = [segment for segment in relative_path.split("/") if segment]
-        chat_session_id = headers.get("x-openclaw-chat-session")
+        session_id = headers.get(_MCP_SESSION_ID_HEADER)
         stripped_path = relative_path
         effective_root_path = root_path
         if segments:
             first_segment = segments[0]
-            session = await self._registry.get(first_segment)
-            if session is not None:
-                chat_session_id = first_segment
+            resolved_session = await self._registry.get(first_segment)
+            if resolved_session is not None:
+                session_id = first_segment
                 stripped_path = "/" + "/".join(segments[1:])
                 if stripped_path == "/":
                     stripped_path = "/"
-                effective_root_path = _join_root_path(root_path, chat_session_id)
+                effective_root_path = _join_root_path(root_path, session_id)
 
-        if not chat_session_id:
-            response = JSONResponse({"error": "Missing chat session."}, status_code=400)
+        if not session_id:
+            response = JSONResponse({"error": "Missing session id."}, status_code=400)
             await response(scope, receive, send)
             return
 
-        session = await self._registry.get(chat_session_id)
-        if session is None:
-            response = JSONResponse({"error": "Unknown chat session."}, status_code=404)
+        session_record = await self._registry.get(session_id)
+        if session_record is None:
+            response = JSONResponse({"error": "Unknown session id."}, status_code=404)
             await response(scope, receive, send)
             return
 
         mcp_server = create_chat_mcp_server(
             self._registry,
-            chat_session_id,
-            session.tools,
+            session_id,
+            session_record.tools,
         )
         await _serve_stateless_http_mcp(
             mcp_server=mcp_server,

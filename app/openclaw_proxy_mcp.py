@@ -12,15 +12,15 @@ from .models import ToolSchema
 
 def create_chat_mcp_server(
     registry: ChatSessionRegistry,
-    chat_session_id: str,
+    session_id: str,
     tools: list[ToolSchema],
 ) -> FastMCP:
-    mcp = FastMCP(f"OtakuRoomChat:{chat_session_id}")
+    mcp = FastMCP(f"OtakuRoomChat:{session_id}")
     for tool in tools:
         mcp.add_tool(
             _ChatSessionTool.from_tool_schema(
                 registry=registry,
-                chat_session_id=chat_session_id,
+                session_id=session_id,
                 tool=tool,
             )
         )
@@ -29,12 +29,12 @@ def create_chat_mcp_server(
 
 def build_chat_http_mcp_app(
     registry: ChatSessionRegistry,
-    chat_session_id: str,
+    session_id: str,
     tools: list[ToolSchema],
 ):
     return create_chat_mcp_server(
         registry=registry,
-        chat_session_id=chat_session_id,
+        session_id=session_id,
         tools=tools,
     ).http_app(path="/", stateless_http=True)
 
@@ -43,7 +43,7 @@ class _ChatSessionTool(Tool):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     registry: ChatSessionRegistry
-    chat_session_id: str
+    session_id: str
     backend_tool_name: str
 
     @classmethod
@@ -51,12 +51,12 @@ class _ChatSessionTool(Tool):
         cls,
         *,
         registry: ChatSessionRegistry,
-        chat_session_id: str,
+        session_id: str,
         tool: ToolSchema,
     ) -> "_ChatSessionTool":
         return cls(
             registry=registry,
-            chat_session_id=chat_session_id,
+            session_id=session_id,
             backend_tool_name=tool.name,
             name=tool.name,
             description=tool.description,
@@ -65,7 +65,7 @@ class _ChatSessionTool(Tool):
 
     async def run(self, arguments: dict[str, Any]) -> ToolResult:
         result = await self.registry.call_tool(
-            self.chat_session_id,
+            self.session_id,
             self.backend_tool_name,
             arguments,
         )

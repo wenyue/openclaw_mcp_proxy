@@ -48,7 +48,7 @@ class ProxyIntegrationTest(unittest.TestCase):
         response = self.client.post(
             "/v1/mcp/",
             headers=self._mcp_headers(
-                {"X-OpenClaw-Chat-Session": session["mcpSessionId"]},
+                {"MCP-Session-Id": session["mcpSessionId"]},
             ),
             json=self._initialize_payload(),
         )
@@ -187,7 +187,7 @@ class ProxyIntegrationTest(unittest.TestCase):
 
         self.assertEqual(200, response.status_code, response.text)
         self.assertIn('"isError":true', response.text)
-        self.assertIn("Chat bridge is not connected.", response.text)
+        self.assertIn("Bridge is not connected.", response.text)
 
     def test_inflight_tool_call_fails_when_session_is_invalidated(self) -> None:
         session = self._create_chat_session_with_tool()
@@ -209,7 +209,7 @@ class ProxyIntegrationTest(unittest.TestCase):
             tool_response = future.result(timeout=2)
             self.assertEqual(200, tool_response.status_code, tool_response.text)
             self.assertIn('"isError":true', tool_response.text)
-            self.assertIn("Chat session was unregistered.", tool_response.text)
+            self.assertIn("Session was unregistered.", tool_response.text)
             self._assert_bridge_closed(websocket)
 
     def test_ttl_cleanup_skips_session_with_pending_call(self) -> None:
@@ -288,7 +288,7 @@ class ProxyIntegrationTest(unittest.TestCase):
 
         async def seed() -> None:
             session = await registry.register(
-                chat_session_id="session-1",
+                session_id="session-1",
                 user_id="test-user",
                 device_id="test-device",
                 device_name="test-device-name",
@@ -429,11 +429,11 @@ class ProxyIntegrationTest(unittest.TestCase):
             self.fail(f"Expected WebSocketDisconnect, got {type(result).__name__}: {result}")
         self.fail("Expected bridge websocket to close, but it stayed open.")
 
-    def _expire_session_in_registry(self, chat_session_id: str) -> None:
+    def _expire_session_in_registry(self, session_id: str) -> None:
         registry = self._registry()
 
         async def expire() -> None:
-            session = registry._sessions[chat_session_id]
+            session = registry._sessions[session_id]
             session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
         self.client.portal.call(expire)
@@ -445,7 +445,7 @@ class ProxyIntegrationTest(unittest.TestCase):
         for route in self.client.app.routes:
             if isinstance(route, Mount) and route.path == "/v1/mcp":
                 return route.app._registry
-        self.fail("Could not locate chat session registry.")
+        self.fail("Could not locate session registry.")
 
     def _restore_env(self, key: str, value: str | None) -> None:
         if value is None:

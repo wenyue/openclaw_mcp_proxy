@@ -33,38 +33,38 @@ def create_router(
     async def create_chat_session(
         payload: CreateChatSessionRequest,
     ) -> CreateChatSessionResponse:
-        chat_session_id = uuid4().hex
+        session_id = uuid4().hex
         await registry.register(
-            chat_session_id=chat_session_id,
+            session_id=session_id,
             user_id=payload.userId,
             device_id=payload.deviceId,
             device_name=payload.deviceName,
             tools=payload.tools,
         )
         return CreateChatSessionResponse(
-            mcpSessionId=chat_session_id,
+            mcpSessionId=session_id,
         )
 
     @router.delete(
-        f"{_CHAT_SESSIONS_PATH}/{{chat_session_id}}",
+        f"{_CHAT_SESSIONS_PATH}/{{session_id}}",
         dependencies=[Depends(require_token_dependency)],
     )
-    async def delete_chat_session(chat_session_id: str) -> JSONResponse:
-        await registry.unregister(chat_session_id)
+    async def delete_chat_session(session_id: str) -> JSONResponse:
+        await registry.unregister(session_id)
         return JSONResponse({"ok": True})
 
-    @router.websocket(f"{_CHAT_SESSIONS_PATH}/{{chat_session_id}}/bridge")
-    async def bridge_chat(websocket: WebSocket, chat_session_id: str) -> None:
+    @router.websocket(f"{_CHAT_SESSIONS_PATH}/{{session_id}}/bridge")
+    async def bridge_chat(websocket: WebSocket, session_id: str) -> None:
         bridge_attached = False
         try:
             await require_websocket_app_token(websocket, app_token)
         except RuntimeError:
             return
         try:
-            await registry.attach_bridge(chat_session_id, websocket)
+            await registry.attach_bridge(session_id, websocket)
             bridge_attached = True
         except KeyError:
-            await websocket.close(code=4404, reason="Unknown chat_session_id.")
+            await websocket.close(code=4404, reason="Unknown session_id.")
             return
         except RuntimeError as exc:
             await websocket.close(code=4409, reason=str(exc))
@@ -84,6 +84,6 @@ def create_router(
                 )
         finally:
             if bridge_attached:
-                await registry.detach_bridge(chat_session_id, websocket)
+                await registry.detach_bridge(session_id, websocket)
 
     return router
